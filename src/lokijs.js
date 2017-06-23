@@ -1042,6 +1042,7 @@
         colls.push({
           name: this.collections[i].name,
           type: this.collections[i].objType,
+          firebase: this.collections[i].firebase,
           count: this.collections[i].data.length
         });
       }
@@ -1546,6 +1547,7 @@
         copyColl.cloneMethod = coll.cloneMethod || "parse-stringify";
         copyColl.autoupdate = coll.autoupdate;
         copyColl.changes = coll.changes;
+        copyColl.firebase = coll.firebase;
 
         if (options && options.retainDirtyFlags === true) {
           copyColl.dirty = coll.dirty;
@@ -4355,6 +4357,10 @@
       /* OPTIONS */
       options = options || {};
 
+      // if set to true we bind collection to Firebase location
+      // collection name represent Firebase location
+      this.firebase = options.hasOwnProperty('firebase') ? options.firebase : false;
+
       // exact match and unique constraints
       if (options.hasOwnProperty('unique')) {
         if (!Array.isArray(options.unique)) {
@@ -4414,10 +4420,14 @@
 
       // events
       this.events = {
+        'sync-insert': [],
+        'sync-update': [],
+        'sync-delete': [],
         'insert': [],
         'update': [],
         'pre-insert': [],
         'pre-update': [],
+        'pre-delete': [],
         'close': [],
         'flushbuffer': [],
         'error': [],
@@ -4979,6 +4989,7 @@
     /**
      * Adds object(s) to collection, ensure object(s) have meta properties, clone it if necessary, etc.
      * @param {(object|array)} doc - the document (or array of documents) to be inserted
+     * @param {boolean} silent - quiet pre-insert and insert event emits
      * @returns {(object|array)} document or documents inserted
      * @memberof Collection
      * @example
@@ -4991,9 +5002,9 @@
      * // alternatively, insert array of documents
      * users.insert([{ name: 'Thor', age: 35}, { name: 'Loki', age: 30}]);
      */
-    Collection.prototype.insert = function (doc) {
+    Collection.prototype.insert = function (doc, silent) {
       if (!Array.isArray(doc)) {
-        return this.insertOne(doc);
+        return this.insertOne(doc, silent);
       }
 
       // holder to the clone of the object inserted if collections is set to clone objects
@@ -5020,10 +5031,10 @@
     /**
      * Adds a single object, ensures it has meta properties, clone it if necessary, etc.
      * @param {object} doc - the document to be inserted
-     * @param {boolean} bulkInsert - quiet pre-insert and insert event emits
+     * @param {boolean} silent - quiet pre-insert and insert event emits
      * @returns {object} document or 'undefined' if there was a problem inserting it
      */
-    Collection.prototype.insertOne = function (doc, bulkInsert) {
+    Collection.prototype.insertOne = function (doc, silent) {
       var err = null;
       var returnObj;
 
@@ -5050,7 +5061,7 @@
 
       // both 'pre-insert' and 'insert' events are passed internal data reference even when cloning
       // insert needs internal reference because that is where loki itself listens to add meta
-      if (!bulkInsert) {
+      if (!silent) {
         this.emit('pre-insert', obj);
       }
       if (!this.add(obj)) {
@@ -5058,7 +5069,7 @@
       }
 
       returnObj = obj;
-      if (!bulkInsert) {
+      if (!silent) {
         this.emit('insert', obj);
         returnObj = this.cloneObjects ? clone(obj, this.cloneMethod) : obj;
       }
@@ -5122,9 +5133,10 @@
     /**
      * Updates an object and notifies collection that the document has changed.
      * @param {object} doc - document to update within the collection
+     * @param {boolean} silent - quiet pre-update and update event emits
      * @memberof Collection
      */
-    Collection.prototype.update = function (doc) {
+    Collection.prototype.update = function (doc, silent) {
       if (Array.isArray(doc)) {
         var k = 0,
           len = doc.length;
@@ -5156,7 +5168,9 @@
         // if configured to clone, do so now... otherwise just use same obj reference
         newInternal = this.cloneObjects ? clone(doc, this.cloneMethod) : doc;
 
-        this.emit('pre-update', doc);
+        if(!silent) {
+          this.emit('pre-update', doc);
+        }
 
         Object.keys(this.constraints.unique).forEach(function (key) {
           self.constraints.unique[key].update(oldInternal, newInternal);
@@ -5193,7 +5207,9 @@
         this.commit();
         this.dirty = true; // for autosave scenarios
 
-        this.emit('update', doc, this.cloneObjects ? clone(oldInternal, this.cloneMethod) : null);
+        if(!silent) {
+          this.emit('update', doc, this.cloneObjects ? clone(oldInternal, this.cloneMethod) : null);
+        }
         return doc;
       } catch (err) {
         this.rollback();
@@ -5323,9 +5339,10 @@
     /**
      * Remove a document from the collection
      * @param {object} doc - document to remove from collection
+     * @param {boolean} silent - quiet pre-delete and delete event emits
      * @memberof Collection
      */
-    Collection.prototype.remove = function (doc) {
+    Collection.prototype.remove = function (doc, silent) {
       if (typeof doc === 'number') {
         doc = this.get(doc);
       }
@@ -5337,13 +5354,17 @@
         var k = 0,
           len = doc.length;
         for (k; k < len; k += 1) {
-          this.remove(doc[k]);
+          this.remove(doc[k], silent);
         }
         return;
       }
 
       if (!hasOwnProperty.call(doc, '$loki')) {
         throw new Error('Object is not a document stored in the collection');
+      }
+      
+      if (!silent) {
+        this.emit('pre-delete', doc);
       }
 
       try {
@@ -5382,7 +5403,9 @@
 
         this.commit();
         this.dirty = true; // for autosave scenarios
-        this.emit('delete', arr[0]);
+        if (!silent) {
+          this.emit('delete', arr[0]);
+        }
         delete doc.$loki;
         delete doc.meta;
         return doc;

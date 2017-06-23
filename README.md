@@ -1,6 +1,9 @@
 # FireLoki
 
 FireLoki add a sync feature to LokiJS to keep synced (local) LokiJS collections with Firebase (remote) locations.
+> Right now FireLoki is in active development phase and it's limited now to fullfill my needs only.
+> Things can change unpredictably!
+
 
 ## LokiJS
 
