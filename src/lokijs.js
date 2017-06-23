@@ -745,6 +745,9 @@
 
       this.options = {};
 
+      // Firebase config options
+      Loki.firebase = (options && options.hasOwnProperty('firebase')) ? {config: options.firebase} : null;
+
       // currently keeping persistenceMethod and persistenceAdapter as loki level properties that
       // will not or cannot be deserialized.  You are required to configure persistence every time
       // you instantiate a loki object (or use default environment detection) in order to load the database anyways.
@@ -1032,6 +1035,34 @@
       this.emit('warning', 'collection ' + collectionName + ' not found');
       return null;
     };
+
+    /**
+     * This is an helper to bind and use a collection with a Firebase location.
+     * Like getCollection retrieves reference to a collection by name and its name represent the Firebase location to bind.
+     * If the collection isn't set, we add a new collection and bind it with its Firebase location
+     * @param {string} collectionName - name of collection to look up
+     * @returns {Collection} Reference to collection in database by that name
+     * @memberof Loki
+     */
+    Loki.prototype.ref = function (collectionName) {
+      var i,
+        len = this.collections.length;
+
+      for (i = 0; i < len; i += 1) {
+        if (this.collections[i].name === collectionName) {
+          return this.collections[i];
+        }
+      }
+
+      // add a new collection
+      // console.log(`Add new collection ${collectionName}`);
+      return this.addCollection(collectionName, {
+        indices: ['uptodate','$key'], 
+        unique: ['$key'], 
+        asyncListeners: false, 
+        firebase: true
+      });
+   };
 
     Loki.prototype.listCollections = function () {
 
@@ -2357,6 +2388,15 @@
         },
         self = this;
 
+      // check for Firebase config options and initialize Firebase
+      if(!Loki.firebase.config) {
+        cFun(new Error('Firebase config missing'));
+        return;
+      } else {
+        Loki.firebase.app = firebase.initializeApp(Loki.firebase.config);
+        Loki.firebase.database = Loki.firebase.app.database();
+      }
+
       // the persistenceAdapter should be present if all is ok, but check to be sure.
       if (this.persistenceAdapter !== null) {
 
@@ -3428,6 +3468,7 @@
         updateFunction(rcd[this.filteredrows[idx]]);
 
         // notify collection we have changed this object so it can update meta and allow DynamicViews to re-evaluate
+        // @TODO
         this.collection.update(rcd[this.filteredrows[idx]]);
       }
 
@@ -3447,6 +3488,7 @@
         this.filteredrows = this.collection.prepareFullDocIndex();
       }
 
+      // @TODO
       this.collection.remove(this.data());
 
       this.filteredrows = [];
@@ -3530,7 +3572,7 @@
 
       //return return a new resultset with no filters
       this.collection = new Collection('joinData');
-      this.collection.insert(result);
+      this.collection._insert(result);
       this.filteredrows = [];
       this.filterInitialized = false;
 
@@ -3541,7 +3583,7 @@
       var data = this.data().map(mapFun);
       //return return a new resultset with no filters
       this.collection = new Collection('mappedData');
-      this.collection.insert(data);
+      this.collection._insert(data);
       this.filteredrows = [];
       this.filterInitialized = false;
 
@@ -4118,7 +4160,7 @@
 
     /**
      * evaluateDocument() - internal method for (re)evaluating document inclusion.
-     *    Called by : collection.insert() and collection.update().
+     *    Called by : collection._insert() and collection._update().
      *
      * @param {int} objIndex - index of document to (re)run through filter pipeline.
      * @param {bool} isNew - true if the document was just added to the collection.
@@ -4475,6 +4517,7 @@
           if (!hasOwnProperty.call(object, '$loki'))
             return self.removeAutoUpdateObserver(object);
           try {
+            // @TODO
             self.update(object);
           } catch (err) {}
         });
@@ -4717,6 +4760,7 @@
           var diff = now - timestamp;
           return age < diff;
         });
+        // @TODO
         toRemove.remove();
       };
     };
@@ -4969,9 +5013,11 @@
      */
     Collection.prototype.findAndUpdate = function (filterObject, updateFunction) {
       if (typeof (filterObject) === "function") {
+        // @TODO
         this.updateWhere(filterObject, updateFunction);
       }
       else {
+        // @TODO
         this.chain().find(filterObject).update(updateFunction);
       }
     };
@@ -4983,10 +5029,68 @@
      * @memberof Collection
      */
     Collection.prototype.findAndRemove = function(filterObject) {
+      // @TODO
       this.chain().find(filterObject).remove();
     };
 
+    // Utils
+    Collection.prototype._running = {};
+    Collection.prototype._keptSynced = {};
+    Collection.prototype._prepareLocalDoc = function(doc, uptodate, remoteReference, remoteKey) {
+      doc.uptodate = uptodate;
+      doc.$ref = remoteReference;
+      doc.$key = remoteKey;
+    };
+    Collection.prototype._prepareRemoteDoc = function(doc) {
+      let remoteDoc = Object.assign({}, doc);
+      delete remoteDoc.$loki;
+      delete remoteDoc.$ref;
+      delete remoteDoc.$key;
+      delete remoteDoc.meta;
+      remoteDoc.uptodate = firebase.database.ServerValue.TIMESTAMP;
+      return remoteDoc;
+    };
+
     /**
+     * Adds object(s) to collection and sync with Firebase Databse if it's required.
+     * @param {(object|array)} doc - the document (or array of documents) to be inserted
+     * @returns {(object|array)} document or documents inserted
+     * @memberof Collection
+     * @example
+     * users.insert({
+     *     name: 'Odin',
+     *     age: 50,
+     *     address: 'Asgard'
+     * });
+     * 
+     * // alternatively, insert array of documents
+     * users.insert([{ name: 'Thor', age: 35}, { name: 'Loki', age: 30}]);
+     */
+    Collection.prototype.insert = function (doc) {
+      if(!this.firebase) return Promise.resolve(this._insert(doc));
+      // if we need to sync with Firebase
+      const ref = Loki.firebase.database.ref(this.name);
+      let newRef = ref.push();
+      this._running[newRef.key] = true;
+      let remoteDoc = this._prepareRemoteDoc(doc);
+      return newRef.set(remoteDoc)
+        .then(() => newRef.child('uptodate').once('value'))
+        .then(data => {
+          this._prepareLocalDoc(doc, data.val(), newRef.toString(), newRef.key);
+          const docObj = this._insert(doc);
+          delete this._running[newRef.key];
+          this.emit('sync-insert', docObj);
+          return Promise.resolve(docObj);
+        })
+        .catch(error => {
+          console.error(`[on insert] Error. Location: "${newRef.toString()}"`, error, remoteDoc);
+          delete this._running[newRef.key];
+          return Promise.reject(error);
+        });
+    };
+
+    /**
+     * This is a private method. Doesn’t perform the sync with Firebase.
      * Adds object(s) to collection, ensure object(s) have meta properties, clone it if necessary, etc.
      * @param {(object|array)} doc - the document (or array of documents) to be inserted
      * @param {boolean} silent - quiet pre-insert and insert event emits
@@ -5002,9 +5106,9 @@
      * // alternatively, insert array of documents
      * users.insert([{ name: 'Thor', age: 35}, { name: 'Loki', age: 30}]);
      */
-    Collection.prototype.insert = function (doc, silent) {
+    Collection.prototype._insert = function (doc, silent) {
       if (!Array.isArray(doc)) {
-        return this.insertOne(doc, silent);
+        return this._insertOne(doc, silent);
       }
 
       // holder to the clone of the object inserted if collections is set to clone objects
@@ -5013,7 +5117,7 @@
 
       this.emit('pre-insert', doc);
       for (var i = 0, len = doc.length; i < len; i++) {
-        obj = this.insertOne(doc[i], true);
+        obj = this._insertOne(doc[i], true);
         if (!obj) {
           return undefined;
         }
@@ -5034,7 +5138,7 @@
      * @param {boolean} silent - quiet pre-insert and insert event emits
      * @returns {object} document or 'undefined' if there was a problem inserting it
      */
-    Collection.prototype.insertOne = function (doc, silent) {
+    Collection.prototype._insertOne = function (doc, silent) {
       var err = null;
       var returnObj;
 
@@ -5084,6 +5188,7 @@
      * @param {bool=} options.removeIndices - (default: false)
      * @memberof Collection
      */
+    // @TODO
     Collection.prototype.clear = function (options) {
       var self = this;
 
@@ -5131,17 +5236,48 @@
     };
 
     /**
+     * Updates an object and sync with Firebase Databse if it's required.
+     * @param {object} docObj - document to update within the collection
+     * @memberof Collection
+     */
+    Collection.prototype.update = function (docObj) {
+      if(!this.firebase) return Promise.resolve(this._update(docObj));
+      // if we need to sync with Firebase
+      if(!docObj.$key) return Promise.reject('$key missing: Unable to bind remote location');
+      const ref = Loki.firebase.database.ref(this.name);
+      this._running[docObj.$key] = true;
+      let newRef = ref.child(docObj.$key);
+      let remoteDoc = this._prepareRemoteDoc(docObj);
+      return newRef.set(remoteDoc)
+        .then(() => newRef.child('uptodate').once('value'))
+        .then(data => {
+          this._prepareLocalDoc(docObj, data.val(), newRef.toString(), newRef.key);
+          this._update(docObj);
+          this.emit('sync-update', docObj);
+          delete this._running[docObj.$key];
+          return Promise.resolve(docObj);
+        })
+        .catch(error => {
+          console.error(`[on update] Error. Location: "${newRef.toString()}"`, error, remoteDoc);
+          delete this._running[docObj.$key];
+          return Promise.reject(error);
+        });
+
+    }
+
+    /**
+     * This is a private method. Doesn’t perform the sync with Firebase.
      * Updates an object and notifies collection that the document has changed.
      * @param {object} doc - document to update within the collection
      * @param {boolean} silent - quiet pre-update and update event emits
      * @memberof Collection
      */
-    Collection.prototype.update = function (doc, silent) {
+    Collection.prototype._update = function (doc, silent) {
       if (Array.isArray(doc)) {
         var k = 0,
           len = doc.length;
         for (k; k < len; k += 1) {
-          this.update(doc[k]);
+          this._update(doc[k]);
         }
         return;
       }
@@ -5307,6 +5443,7 @@
       try {
         for (i; i < results.length; i++) {
           obj = updateFunction(results[i]);
+          // @TODO
           this.update(obj);
         }
 
@@ -5326,23 +5463,52 @@
       var list;
       if (typeof query === 'function') {
         list = this.data.filter(query);
+        // @TODO
         this.remove(list);
       } else {
+        // @TODO
         this.chain().find(query).remove();
       }
     };
 
     Collection.prototype.removeDataOnly = function () {
-      this.remove(this.data.slice());
+      this._remove(this.data.slice());
     };
 
     /**
+     * Remove a document from the collection and sync with Firebase Databse if it's required 
+     * @param {object} docObj - document to remove from collection
+     * @memberof Collection
+     */
+    Collection.prototype.remove = function (docObj) {
+      if(!this.firebase) return Promise.resolve(this._remove(docObj));
+      // if we need to sync with Firebase
+      if(!docObj.$key) return Promise.reject('$key missing: Unable to bind remote location');
+      const ref = Loki.firebase.database.ref(this.name);
+      let newRef = ref.child(docObj.$key);
+      this._running[docObj.$key] = true;
+      return newRef.set(null)
+        .then(() => {
+          this._remove(docObj);
+          this.emit('sync-delete', docObj)
+          delete this._running[docObj.$key];
+          return Promise.resolve(docObj);
+        })
+        .catch(error => {
+          console.error(`[remoteDb] [on remove] Error. Location: "${ref.toString()}"`, error);
+          delete this._running[docObj.$key];
+          return Promise.reject(error);
+        });
+    };
+
+    /**
+     * This is a private method. Doesn’t perform the sync with Firebase.
      * Remove a document from the collection
      * @param {object} doc - document to remove from collection
      * @param {boolean} silent - quiet pre-delete and delete event emits
      * @memberof Collection
      */
-    Collection.prototype.remove = function (doc, silent) {
+    Collection.prototype._remove = function (doc, silent) {
       if (typeof doc === 'number') {
         doc = this.get(doc);
       }
@@ -5354,7 +5520,7 @@
         var k = 0,
           len = doc.length;
         for (k; k < len; k += 1) {
-          this.remove(doc[k], silent);
+          this._remove(doc[k], silent);
         }
         return;
       }
@@ -6138,7 +6304,7 @@
         timestamp = new Date().getTime();
 
       for (prop in stage) {
-
+        // @TODO
         this.update(stage[prop]);
         this.commitLog.push({
           timestamp: timestamp,
