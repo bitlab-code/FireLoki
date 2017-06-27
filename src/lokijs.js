@@ -830,6 +830,13 @@
     Loki.prototype = new LokiEventEmitter();
     Loki.prototype.constructor = Loki;
 
+    Loki.prototype.getFirebaseApp = function() {
+      return Loki.firebase.app;
+    };
+    Loki.prototype.getFirebaseDatabase = function() {
+      return Loki.firebase.database;
+    };
+
     // experimental support for browserify's abstract syntax scan to pick up dependency of indexed adapter.
     // Hopefully, once this hits npm a browserify require of lokijs should scan the main file and detect this indexed adapter reference.
     Loki.prototype.getIndexedAdapter = function () {
@@ -3450,6 +3457,10 @@
      * @memberof Resultset
      */
     Resultset.prototype.update = function (updateFunction) {
+      // @TODO
+      if(this.collection.firebase) {
+        throw new Error(`Resultset 'update' isn't supported yet (with Firebase)`);
+      }
 
       if (typeof (updateFunction) !== "function") {
         throw new TypeError('Argument is not a function');
@@ -3482,7 +3493,10 @@
      * @memberof Resultset
      */
     Resultset.prototype.remove = function () {
-
+      // @TODO
+      if(this.collection.firebase) {
+        throw new Error(`Resultset 'remove' isn't supported yet (with Firebase)`);
+      }
       // if this has no filters applied, we need to populate filteredrows first
       if (!this.filterInitialized && this.filteredrows.length === 0) {
         this.filteredrows = this.collection.prepareFullDocIndex();
@@ -5012,6 +5026,11 @@
      * @memberof Collection
      */
     Collection.prototype.findAndUpdate = function (filterObject, updateFunction) {
+      // @TODO
+      if(this.firebase) {
+        throw new Error(`Collection 'findAndUpdate' isn't supported yet (with Firebase)`);
+      }
+
       if (typeof (filterObject) === "function") {
         // @TODO
         this.updateWhere(filterObject, updateFunction);
@@ -5030,6 +5049,9 @@
      */
     Collection.prototype.findAndRemove = function(filterObject) {
       // @TODO
+      if(this.firebase) {
+        throw new Error(`Collection 'findAndRemove' isn't supported yet (with Firebase)`);
+      }
       this.chain().find(filterObject).remove();
     };
 
@@ -5069,6 +5091,7 @@
     Collection.prototype.insert = function (doc) {
       if(!this.firebase) return Promise.resolve(this._insert(doc));
       // if we need to sync with Firebase
+      if (Array.isArray(doc)) return Promise.reject(`Bulk insert isn't supported yet (with Firebase)`);
       const ref = Loki.firebase.database.ref(this.name);
       let newRef = ref.push();
       this._running[newRef.key] = true;
@@ -5115,7 +5138,9 @@
       var obj;
       var results = [];
 
-      this.emit('pre-insert', doc);
+      if (!silent) {
+        this.emit('pre-insert', doc);
+      }
       for (var i = 0, len = doc.length; i < len; i++) {
         obj = this._insertOne(doc[i], true);
         if (!obj) {
@@ -5124,7 +5149,9 @@
         results.push(obj);
       }
       // at the 'batch' level, if clone option is true then emitted docs are clones
-      this.emit('insert', results);
+      if (!silent) {
+        this.emit('insert', results);
+      }
 
       // if clone option is set, clone return values
       results = this.cloneObjects ? clone(results, this.cloneMethod) : results;
@@ -5243,6 +5270,7 @@
     Collection.prototype.update = function (docObj) {
       if(!this.firebase) return Promise.resolve(this._update(docObj));
       // if we need to sync with Firebase
+      if (Array.isArray(docObj)) return Promise.reject(`Bulk update isn't supported yet (with Firebase)`);
       if(!docObj.$key) return Promise.reject('$key missing: Unable to bind remote location');
       const ref = Loki.firebase.database.ref(this.name);
       this._running[docObj.$key] = true;
@@ -5437,6 +5465,11 @@
      * @memberof Collection
      */
     Collection.prototype.updateWhere = function(filterFunction, updateFunction) {
+      // @TODO
+      if(this.firebase) {
+        throw new Error(`Collection 'updateWhere' isn't supported yet (with Firebase)`);
+      }
+
       var results = this.where(filterFunction),
         i = 0,
         obj;
@@ -5460,6 +5493,11 @@
      * @memberof Collection
      */
     Collection.prototype.removeWhere = function (query) {
+      // @TODO
+      if(this.firebase) {
+        throw new Error(`Collection 'removeWhere' isn't supported yet (with Firebase)`);
+      }
+
       var list;
       if (typeof query === 'function') {
         list = this.data.filter(query);
@@ -5483,6 +5521,7 @@
     Collection.prototype.remove = function (docObj) {
       if(!this.firebase) return Promise.resolve(this._remove(docObj));
       // if we need to sync with Firebase
+      if (Array.isArray(docObj)) return Promise.reject(`Bulk remove isn't supported yet (with Firebase)`);
       if(!docObj.$key) return Promise.reject('$key missing: Unable to bind remote location');
       const ref = Loki.firebase.database.ref(this.name);
       let newRef = ref.child(docObj.$key);
