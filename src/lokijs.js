@@ -5057,7 +5057,13 @@
 
     // Utils
     Collection.prototype._running = {};
-    Collection.prototype._keptSynced = {};
+    Collection.prototype._updateLokiDoc = function(doc, newDoc) {
+      const preserve = ['$loki', 'meta'];
+      for (let p in doc) if (doc.hasOwnProperty(p) && !preserve.includes(p)) { // preserve.indexOf(p) > -1
+          delete doc[p];
+      }
+      Object.assign(doc, newDoc);
+    };
     Collection.prototype._prepareLocalDoc = function(doc, uptodate, remoteReference, remoteKey) {
       doc.uptodate = uptodate;
       doc.$ref = remoteReference;
@@ -5071,6 +5077,92 @@
       delete remoteDoc.meta;
       remoteDoc.uptodate = firebase.database.ServerValue.TIMESTAMP;
       return remoteDoc;
+    };
+
+    /**
+     * Keep a collection synced with Firebase locations attaching an asynchronous listeners.
+     * @param {boolean} keep - if attach or detach listeners
+     * @memberof Collection
+     */
+    Collection.prototype.keepSynced = function(keep) {
+      if(!this.firebase) throw new Error(`Collection '${this.name}' isn't associated with Firebase location`);
+      const ref = Loki.firebase.database.ref(this.name);
+      
+      if(keep === true) {
+        if(this.keptSynced) {
+          console.warn(`[keepSynced] [${this.name}] Already kept synced`);
+        } else {
+          let uptodate = this.mapReduce( doc => doc.uptodate, arr => Math.max(...arr));
+          uptodate = (!isNaN(parseFloat(uptodate)) && isFinite(uptodate)) ? uptodate : 0;
+          
+          const on_child_added = ref.orderByChild('uptodate').startAt(uptodate).on('child_added', (data, siblingKey) => {
+            if(this._running[data.key]) {
+              console.log(`[on child_added] [${this.name}] Skip. $key: "${data.key}" (${data.val().uptodate})`);
+            } else if(!isNaN(parseFloat(data.val().uptodate)) && isFinite(data.val().uptodate)) {
+              if(!this.findOne({$key: data.key})) {
+                const docObj = data.val();
+                if(Object.keys(docObj).length == 1) {
+                  // skip, nothing to remove
+                  console.log(`[on child_added] [${this.name}] Skip (remove). $key: "${data.key}" (${data.val().uptodate})`);
+                } else {
+                  this._prepareLocalDoc(docObj, data.val().uptodate, data.ref.toString(), data.key);
+                  this._insert(docObj, true);
+                  console.log(`[on child_added] [${this.name}] [INSERT]. $key: "${data.key}"`, docObj);
+                }
+              } else {
+                // @TODO We weren't expecting a local document! performe this._update ?
+              }
+            } else {
+              // @TODO We were expecting a numeric value for 'uptodate' field!
+            }
+          });
+
+          const on_child_changed = ref.orderByChild('uptodate').on('child_changed', (data, siblingKey) => {
+            const doc = data.val();
+            const docObj = this.findOne({$key: data.key});
+            if(this._running[data.key]) {
+              console.log(`[on child_changed] [${this.name}] Skip. $key: "${data.key}" (${data.val().uptodate})`);
+            } else if(!isNaN(parseFloat(data.val().uptodate)) && isFinite(data.val().uptodate)) {
+              if(Object.keys(doc).length == 1) {
+                if(docObj) {
+                  // remove
+                  this._remove(docObj);
+                  console.log(`[on child_changed] [${this.name}] [DELETE]. $key: "${data.key}"`, docObj);
+                } else {
+                }
+              } else {
+                if(docObj) {
+                  // update
+                  this._updateLokiDoc(docObj, data.val());
+                  this._prepareLocalDoc(docObj, data.val().uptodate, data.ref.toString(), data.key);
+                  this._update(docObj, true);
+                  console.log(`[on child_changed] [${this.name}] [UPDATE]. $key: "${data.key}"`, docObj);
+                } else {
+                  // insert
+                  this._prepareLocalDoc(doc, data.val().uptodate, data.ref.toString(), data.key);
+                  this._insert(doc, true);
+                  console.log(`[on child_changed] [${this.name}] [INSERT]. Expecting a local document with $key: "${data.key}" but there is not!`, doc);
+                }
+              }
+            } else {
+              // @TODO We were expecting a numeric value for 'uptodate' field!
+            }
+          });
+
+          this.keptSynced = { child_added: on_child_added, child_changed: on_child_changed };
+          console.log(`[keepSynced] [${this.name}] listeners on, startAt: ${uptodate}`);
+        }
+      } else {
+        if(!this.keptSynced) {
+          console.warn(`[keepSynced] [${this.name}] isn't synced yet`);
+        } else {
+          for (let e in this.keptSynced) if (this.keptSynced.hasOwnProperty(e)) {
+            ref.off(e, this.keptSynced[e]);
+            console.log(`[keepSynced] [${this.name}] listener '${e}' off`);
+          }
+          delete this.keptSynced;
+        }
+      }
     };
 
     /**
@@ -5113,7 +5205,7 @@
     };
 
     /**
-     * This is a private method. Doesn’t perform the sync with Firebase.
+     * This is a private method. Doesn't perform the sync with Firebase.
      * Adds object(s) to collection, ensure object(s) have meta properties, clone it if necessary, etc.
      * @param {(object|array)} doc - the document (or array of documents) to be inserted
      * @param {boolean} silent - quiet pre-insert and insert event emits
@@ -5290,11 +5382,10 @@
           delete this._running[docObj.$key];
           return Promise.reject(error);
         });
-
     }
 
     /**
-     * This is a private method. Doesn’t perform the sync with Firebase.
+     * This is a private method. Doesn't perform the sync with Firebase.
      * Updates an object and notifies collection that the document has changed.
      * @param {object} doc - document to update within the collection
      * @param {boolean} silent - quiet pre-update and update event emits
@@ -5524,24 +5615,26 @@
       if (Array.isArray(docObj)) return Promise.reject(`Bulk remove isn't supported yet (with Firebase)`);
       if(!docObj.$key) return Promise.reject('$key missing: Unable to bind remote location');
       const ref = Loki.firebase.database.ref(this.name);
-      let newRef = ref.child(docObj.$key);
       this._running[docObj.$key] = true;
-      return newRef.set(null)
-        .then(() => {
+      let newRef = ref.child(docObj.$key);
+      let remoteDoc = this._prepareRemoteDoc({});
+      return newRef.set(remoteDoc)
+        .then(() => newRef.child('uptodate').once('value'))
+        .then(data => {
           this._remove(docObj);
           this.emit('sync-delete', docObj)
           delete this._running[docObj.$key];
           return Promise.resolve(docObj);
         })
         .catch(error => {
-          console.error(`[remoteDb] [on remove] Error. Location: "${ref.toString()}"`, error);
+          console.error(`[on remove] Error. Location: "${newRef.toString()}"`, error);
           delete this._running[docObj.$key];
           return Promise.reject(error);
         });
     };
 
     /**
-     * This is a private method. Doesn’t perform the sync with Firebase.
+     * This is a private method. Doesn't perform the sync with Firebase.
      * Remove a document from the collection
      * @param {object} doc - document to remove from collection
      * @param {boolean} silent - quiet pre-delete and delete event emits
