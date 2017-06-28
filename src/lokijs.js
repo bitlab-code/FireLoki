@@ -3412,7 +3412,7 @@
               obj = clone(data[i], method);
               if (options.removeMeta) {
                 delete obj.$loki;
-                delete obj.meta;
+                delete obj.$meta;
               }
               result.push(obj);
             }
@@ -3437,7 +3437,7 @@
           obj = clone(data[fr[i]], method);
           if (options.removeMeta) {
             delete obj.$loki;
-            delete obj.meta;
+            delete obj.$meta;
           }
           result.push(obj);
         }
@@ -4577,32 +4577,32 @@
           len = obj.length;
 
           for(idx=0; idx<len; idx++) {
-            if (!obj[idx].hasOwnProperty('meta')) {
-              obj[idx].meta = {};
+            if (!obj[idx].hasOwnProperty('$meta')) {
+              obj[idx].$meta = {};
             }
 
-            obj[idx].meta.created = (new Date()).getTime();
-            obj[idx].meta.revision = 0;
+            obj[idx].$meta.created = (new Date()).getTime();
+            obj[idx].$meta.revision = 0;
           }
 
           return;
         }
 
         // single object
-        if (!obj.meta) {
-          obj.meta = {};
+        if (!obj.$meta) {
+          obj.$meta = {};
         }
 
-        obj.meta.created = (new Date()).getTime();
-        obj.meta.revision = 0;
+        obj.$meta.created = (new Date()).getTime();
+        obj.$meta.revision = 0;
       }
 
       function updateMeta(obj) {
         if (!obj) {
           return;
         }
-        obj.meta.updated = (new Date()).getTime();
-        obj.meta.revision += 1;
+        obj.$meta.updated = (new Date()).getTime();
+        obj.$meta.revision += 1;
       }
 
       function createInsertChange(obj) {
@@ -4770,7 +4770,7 @@
       return function ttlDaemon() {
         var now = Date.now();
         var toRemove = collection.chain().where(function daemonFilter(member) {
-          var timestamp = member.meta.updated || member.meta.created;
+          var timestamp = member.$meta.updated || member.$meta.created;
           var diff = now - timestamp;
           return age < diff;
         });
@@ -5058,7 +5058,7 @@
     // Utils
     Collection.prototype._running = {};
     Collection.prototype._updateLokiDoc = function(doc, newDoc) {
-      const preserve = ['$loki', 'meta'];
+      const preserve = ['$loki', '$meta'];
       for (let p in doc) if (doc.hasOwnProperty(p) && !preserve.includes(p)) { // preserve.indexOf(p) > -1
           delete doc[p];
       }
@@ -5074,7 +5074,7 @@
       delete remoteDoc.$loki;
       delete remoteDoc.$ref;
       delete remoteDoc.$key;
-      delete remoteDoc.meta;
+      delete remoteDoc.$meta;
       remoteDoc.uptodate = firebase.database.ServerValue.TIMESTAMP;
       return remoteDoc;
     };
@@ -5275,8 +5275,8 @@
       // if configured to clone, do so now... otherwise just use same obj reference
       var obj = this.cloneObjects ? clone(doc, this.cloneMethod) : doc;
 
-      if (typeof obj.meta === 'undefined') {
-        obj.meta = {
+      if (typeof obj.$meta === 'undefined') {
+        obj.$meta = {
           revision: 0,
           created: 0
         };
@@ -5501,7 +5501,7 @@
         }
 
         obj.$loki = this.maxId;
-        obj.meta.version = 0;
+        obj.$meta.version = 0;
 
         var key, constrUnique = this.constraints.unique;
         for (key in constrUnique) {
@@ -5705,7 +5705,7 @@
           this.emit('delete', arr[0]);
         }
         delete doc.$loki;
-        delete doc.meta;
+        delete doc.$meta;
         return doc;
 
       } catch (err) {
