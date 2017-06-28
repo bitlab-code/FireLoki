@@ -5093,7 +5093,7 @@
           console.warn(`[keepSynced] [${this.name}] Already kept synced`);
         } else {
           let uptodate = this.mapReduce( doc => doc.uptodate, arr => Math.max(...arr));
-          uptodate = (!isNaN(parseFloat(uptodate)) && isFinite(uptodate)) ? uptodate : 0;
+          uptodate = (!isNaN(parseFloat(uptodate)) && isFinite(uptodate)) ? (uptodate+1) : 0;
           
           const on_child_added = ref.orderByChild('uptodate').startAt(uptodate).on('child_added', (data, siblingKey) => {
             if(this._running[data.key]) {
