@@ -4664,6 +4664,9 @@
       /**
        * FireLoki Utilities
        */
+      this.isDoc = function(doc) {
+        return (typeof newDoc == 'object' && newDoc!== null && !Array.isArray(newDoc));
+      };
       this.isEmptyDoc = function(doc) {
         let d = Object.assign({}, doc);
         delete d.$loki;
@@ -4672,6 +4675,26 @@
         delete d.$meta;
         return (Object.keys(d).length === 0 || (Object.keys(d).length === 1 && d.uptodate));
       }
+      this.prepareLocalDoc = function(doc, newDoc, uptodate, remoteReference, remoteKey) {
+        if(this.isDoc(newDoc)) {
+          const preserve = ['$loki','$meta'];
+          for (let p in doc) if (doc.hasOwnProperty(p) && !preserve.includes(p)) delete doc[p];
+          Object.assign(doc, newDoc);
+        }
+        doc.uptodate = uptodate;
+        doc.$ref = remoteReference;
+        doc.$key = remoteKey;
+      };
+      this.prepareRemoteDoc = function(doc) {
+        let remoteDoc = Object.assign({}, doc);
+        delete remoteDoc.$loki;
+        delete remoteDoc.$ref;
+        delete remoteDoc.$key;
+        delete remoteDoc.$meta;
+        remoteDoc.uptodate = firebase.database.ServerValue.TIMESTAMP;
+        return remoteDoc;
+      };
+   
     }
 
     Collection.prototype = new LokiEventEmitter();
@@ -5069,28 +5092,7 @@
 
     // Utils
     Collection.prototype._running = {};
-    Collection.prototype._updateLokiDoc = function(doc, newDoc) {
-      const preserve = ['$loki', '$meta'];
-      for (let p in doc) if (doc.hasOwnProperty(p) && !preserve.includes(p)) { // preserve.indexOf(p) > -1
-          delete doc[p];
-      }
-      Object.assign(doc, newDoc);
-    };
-    Collection.prototype._prepareLocalDoc = function(doc, uptodate, remoteReference, remoteKey) {
-      doc.uptodate = uptodate;
-      doc.$ref = remoteReference;
-      doc.$key = remoteKey;
-    };
-    Collection.prototype._prepareRemoteDoc = function(doc) {
-      let remoteDoc = Object.assign({}, doc);
-      delete remoteDoc.$loki;
-      delete remoteDoc.$ref;
-      delete remoteDoc.$key;
-      delete remoteDoc.$meta;
-      remoteDoc.uptodate = firebase.database.ServerValue.TIMESTAMP;
-      return remoteDoc;
-    };
-    
+ 
     /**
      * Keep a collection synced with Firebase locations attaching an asynchronous listeners.
      * @param {boolean} keep - if attach or detach listeners
@@ -5119,7 +5121,7 @@
                   if(this.isEmptyDoc(docObj)) {
                     console.log(`[on child_added] [${this.name}] [SKIP-DELETE]. $key: "${data.key}" (${data.val().uptodate})`);
                   } else {
-                    this._prepareLocalDoc(docObj, data.val().uptodate, data.ref.toString(), data.key);
+                    this.prepareLocalDoc(docObj, false, data.val().uptodate, data.ref.toString(), data.key);
                     this._insert(docObj, true);
                     console.log(`[on child_added] [${this.name}] [INSERT]. $key: "${data.key}"`, docObj);
                   }
@@ -5146,13 +5148,12 @@
                 } else {
                   if(docObj) {
                     // update
-                    this._updateLokiDoc(docObj, data.val());
-                    this._prepareLocalDoc(docObj, data.val().uptodate, data.ref.toString(), data.key);
+                    this.prepareLocalDoc(docObj, data.val(), data.val().uptodate, data.ref.toString(), data.key);
                     this._update(docObj, true);
                     console.log(`[on child_changed] [${this.name}] [UPDATE]. $key: "${data.key}"`, docObj);
                   } else {
                     // insert
-                    this._prepareLocalDoc(doc, data.val().uptodate, data.ref.toString(), data.key);
+                    this.prepareLocalDoc(doc, false, data.val().uptodate, data.ref.toString(), data.key);
                     this._insert(doc, true);
                     console.log(`[on child_changed] [${this.name}] [INSERT]. Expecting a local document with $key: "${data.key}" but there is not!`, doc);
                   }
@@ -5213,15 +5214,14 @@
             } else {
               if(docObj) {
                 // update
-                self._updateLokiDoc(docObj, data.val());
-                self._prepareLocalDoc(docObj, data.val().uptodate, data.ref.toString(), data.key);
+                self.prepareLocalDoc(docObj, data.val(), data.val().uptodate, data.ref.toString(), data.key);
                 self._update(docObj, true);
                 docs.updated.push(docObj);
                 console.log(`[syncLocal] [${self.name}] [UPDATE]. $key: "${data.key}"`, docObj);
               } else {
                 // insert
                 let doc = data.val();
-                self._prepareLocalDoc(doc, data.val().uptodate, data.ref.toString(), data.key);
+                self.prepareLocalDoc(doc, false, data.val().uptodate, data.ref.toString(), data.key);
                 const newDocObj = self._insert(doc, true);
                 docs.inserted.push(newDocObj);
                 console.log(`[syncLocal] [${self.name}] [INSERT]. $key: "${data.key}"`, newDocObj);
@@ -5261,11 +5261,11 @@
         const ref = Loki.firebase.database.ref(this.name);
         let newRef = ref.push();
         this._running[newRef.key] = true;
-        let remoteDoc = this._prepareRemoteDoc(doc);
+        let remoteDoc = this.prepareRemoteDoc(doc);
         return newRef.set(remoteDoc)
           .then(() => newRef.child('uptodate').once('value'))
           .then(data => {
-            this._prepareLocalDoc(doc, data.val(), newRef.toString(), newRef.key);
+            this.prepareLocalDoc(doc, false, data.val(), newRef.toString(), newRef.key);
             const docObj = this._insert(doc);
             delete this._running[newRef.key];
             this.emit('sync-insert', docObj);
@@ -5445,11 +5445,11 @@
         const ref = Loki.firebase.database.ref(this.name);
         this._running[docObj.$key] = true;
         let newRef = ref.child(docObj.$key);
-        let remoteDoc = this._prepareRemoteDoc(docObj);
+        let remoteDoc = this.prepareRemoteDoc(docObj);
         return newRef.set(remoteDoc)
           .then(() => newRef.child('uptodate').once('value'))
           .then(data => {
-            this._prepareLocalDoc(docObj, data.val(), newRef.toString(), newRef.key);
+            this.prepareLocalDoc(docObj, false, data.val(), newRef.toString(), newRef.key);
             this._update(docObj);
             this.emit('sync-update', docObj);
             delete this._running[docObj.$key];
@@ -5698,7 +5698,7 @@
         const ref = Loki.firebase.database.ref(this.name);
         this._running[docObj.$key] = true;
         let newRef = ref.child(docObj.$key);
-        let remoteDoc = this._prepareRemoteDoc({});
+        let remoteDoc = this.prepareRemoteDoc({});
         return newRef.set(remoteDoc)
           .then(() => newRef.child('uptodate').once('value'))
           .then(data => {
