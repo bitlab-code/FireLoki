@@ -4660,6 +4660,18 @@
       });
       // for de-serialization purposes
       flushChanges();
+
+      /**
+       * FireLoki Utilities
+       */
+      this.isEmptyDoc = function(doc) {
+        let d = Object.assign({}, doc);
+        delete d.$loki;
+        delete d.$ref;
+        delete d.$key;
+        delete d.$meta;
+        return (Object.keys(d).length === 0 || (Object.keys(d).length === 1 && d.uptodate));
+      }
     }
 
     Collection.prototype = new LokiEventEmitter();
@@ -5078,7 +5090,7 @@
       remoteDoc.uptodate = firebase.database.ServerValue.TIMESTAMP;
       return remoteDoc;
     };
-
+    
     /**
      * Keep a collection synced with Firebase locations attaching an asynchronous listeners.
      * @param {boolean} keep - if attach or detach listeners
@@ -5104,8 +5116,7 @@
               } else if(!isNaN(parseFloat(data.val().uptodate)) && isFinite(data.val().uptodate)) {
                 if(!this.findOne({$key: data.key})) {
                   const docObj = data.val();
-                  if(Object.keys(docObj).length == 1) {
-                    // skip, nothing to remove
+                  if(this.isEmptyDoc(docObj)) {
                     console.log(`[on child_added] [${this.name}] [SKIP-DELETE]. $key: "${data.key}" (${data.val().uptodate})`);
                   } else {
                     this._prepareLocalDoc(docObj, data.val().uptodate, data.ref.toString(), data.key);
@@ -5126,9 +5137,8 @@
               if(this._running[data.key]) {
                 console.log(`[on child_changed] [${this.name}] [SKIP-RUNNING]. $key: "${data.key}" (${data.val().uptodate})`);
               } else if(!isNaN(parseFloat(data.val().uptodate)) && isFinite(data.val().uptodate)) {
-                if(Object.keys(doc).length == 1) {
+                if(this.isEmptyDoc(doc)) {
                   if(docObj) {
-                    // remove
                     this._remove(docObj);
                     console.log(`[on child_changed] [${this.name}] [DELETE]. $key: "${data.key}"`, docObj);
                   } else {
@@ -5192,9 +5202,8 @@
             console.log(`[syncLocal] [${self.name}] [SKIP-RUNNING]. $key: "${data.key}" (${data.val().uptodate})`);
           } else if(!isNaN(parseFloat(data.val().uptodate)) && isFinite(data.val().uptodate)) {
             const docObj = self.findOne({$key: data.key});
-            if(Object.keys(data.val()).length == 1) {
+            if(self.isEmptyDoc(data.val())) {
               if(docObj) {
-                // remove
                 self._remove(docObj);
                 docs.deleted.push(docObj);
                 console.log(`[syncLocal] [${self.name}] [DELETE]. $key: "${data.key}"`, docObj);
@@ -5221,7 +5230,6 @@
           } else {
             docs.errors.push(data.key);
             console.error(`[syncLocal] [${self.name}] Error. A Numeric was expected for 'uptodate'. $key: "${data.key}" (${data.val().uptodate})`, data.val());
-            // throw new TypeError(`[syncLocal] [${self.name}] A numeric was expected for 'uptodate' field!`);
           }
         });
         return Promise.resolve(docs);
@@ -5247,6 +5255,7 @@
       if(!this.firebase) return Promise.resolve(this._insert(doc));
       // if we need to sync with Firebase
       if (Array.isArray(doc)) return Promise.reject(`Bulk insert isn't supported yet (with Firebase)`);
+      if (this.isEmptyDoc(doc)) return Promise.reject(`Cannot insert an empty doc (with Firebase)`);
       return this.syncLocal().then(res => {
         console.log(`** syncLocal ** (insert)`, res);
         const ref = Loki.firebase.database.ref(this.name);
@@ -5429,6 +5438,7 @@
       if(!this.firebase) return Promise.resolve(this._update(docObj));
       // if we need to sync with Firebase
       if (Array.isArray(docObj)) return Promise.reject(`Bulk update isn't supported yet (with Firebase)`);
+      if (this.isEmptyDoc(docObj)) return Promise.reject(`Cannot update with an empty doc (with Firebase)`);
       if(!docObj.$key) return Promise.reject('$key missing: Unable to bind remote location');
       return this.syncLocal().then(res => {
         console.log(`** syncLocal ** (update)`, res);
